@@ -1,0 +1,10 @@
+node_modules/
+.wrangler/
+
+.env
+.env.*
+!.env.example
+
+*.local
+*.secret
+secrets/
