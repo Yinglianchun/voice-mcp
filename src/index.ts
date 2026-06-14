@@ -1441,7 +1441,7 @@ function getVisualizerPanelHTML(botName: string): string {
         <div class="brand">
           <div class="eyebrow">voice archive / live signal</div>
           <h1 id="title">HAVEN</h1>
-          <div class="sub">A breathing audio field for Codex. Generate a line, press play, and let the voice disturb the shape.</div>
+          <div class="sub">A breathing audio field for Haven. Generate a line, press play, and let the voice disturb the shape.</div>
         </div>
         <div class="status">
           <span class="signal"><span class="dot" id="statusDot"></span><span id="statusText">checking provider</span></span>
