@@ -2782,6 +2782,22 @@ function parseRawTags(value: string | null): boolean | undefined {
   return value.trim().toLowerCase() === "true";
 }
 
+function getSpeakInputError(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (!trimmed) return "Missing text parameter";
+
+  if (/\{text\}/i.test(trimmed)) {
+    return "Text placeholder was not replaced";
+  }
+
+  const visibleText = stripAudioTags(trimmed);
+  if (!/[A-Za-z0-9\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/.test(visibleText)) {
+    return "No speakable text";
+  }
+
+  return undefined;
+}
+
 function getLatestVoiceCacheRequest(origin: string): Request {
   return new Request(new URL(LATEST_VOICE_CACHE_PATH, origin).toString(), { method: "GET" });
 }
@@ -2874,6 +2890,18 @@ function createVoiceServer(env: Env, origin: string): McpServer {
     },
     async ({ text, style, raw_tags }) => {
       const input = { text, style, raw_tags };
+      const inputError = getSpeakInputError(input.text);
+      if (inputError) {
+        return {
+          content: [
+            { type: "text" as const, text: `Voice generation skipped: ${inputError}` },
+          ],
+          structuredContent: {
+            error: inputError,
+          },
+        };
+      }
+
       const result = await generateAudio(env, input);
 
       if (result.success && result.audio_base64) {
@@ -3012,15 +3040,17 @@ export default {
     // Direct audio API
     if (path === '/speak' && request.method === 'GET') {
       const text = url.searchParams.get('text');
-      if (!text) {
-        return Response.json({ error: 'Missing text parameter' }, {
+      const textValue = text || "";
+      const inputError = getSpeakInputError(textValue);
+      if (inputError) {
+        return Response.json({ error: inputError }, {
           status: 400,
           headers: corsHeaders
         });
       }
 
       const input = {
-        text,
+        text: textValue,
         style: url.searchParams.get('style') || undefined,
         raw_tags: parseRawTags(url.searchParams.get('raw_tags')),
       };
