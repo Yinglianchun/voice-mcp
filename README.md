@@ -4,6 +4,10 @@ An MCP (Model Context Protocol) server for AI voice synthesis with an inline aud
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 
+<a href="https://github.com/DasterProkio/awesome-ai-companion">
+  <img src="https://raw.githubusercontent.com/DasterProkio/awesome-ai-companion/main/assets/featured-in-awesome-ai-companion.png" alt="Featured in Awesome AI Companion" height="24">
+</a>
+
 ## Fork Notice
 
 This repository is a fork of [garan0613/voice-mcp](https://github.com/garan0613/voice-mcp), released under the MIT License.
