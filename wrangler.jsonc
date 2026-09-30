@@ -3,6 +3,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "ELEVENLABS_MODEL_ID": "eleven_v4"
+  },
   "observability": {
     "enabled": true
   }

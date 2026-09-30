@@ -18,8 +18,8 @@ This fork lives at [Yinglianchun/voice-mcp](https://github.com/Yinglianchun/voic
 
 - Added `TTS_PROVIDER` switching between DashScope/CosyVoice and ElevenLabs.
 - Kept the old `speak(text)` call compatible, and extended it to `speak(text, style?, raw_tags?)`.
-- Added ElevenLabs TTS support with configurable model, output format, voice settings, and optional v3 audio tags.
-- Added style-to-tag mapping for ElevenLabs v3, while stripping raw audio tags before DashScope/CosyVoice calls.
+- Added ElevenLabs TTS support with configurable model, output format, voice settings, and optional v3/v4 audio tags.
+- Added style-to-tag mapping for ElevenLabs v3/v4, while stripping raw audio tags before DashScope/CosyVoice calls.
 - Added `/status` fields for provider, model, voice, configuration state, and audio tag availability.
 - Added `/panel`, a breathing audio visualizer that listens for the latest MCP `speak` result.
 - Added `/events/latest` so the panel can receive the newest generated voice and text.
@@ -98,7 +98,8 @@ npx wrangler secret put ELEVENLABS_VOICE_ID_EN
 Optional:
 
 ```bash
-npx wrangler secret put ELEVENLABS_MODEL_ID       # Default: eleven_v3
+# ELEVENLABS_MODEL_ID is set to eleven_v4 in wrangler.jsonc.
+# Change that non-secret variable to select another model.
 npx wrangler secret put ELEVENLABS_OUTPUT_FORMAT  # Default: mp3_44100_128
 npx wrangler secret put ELEVENLABS_LANGUAGE_CODE  # Example: zh
 npx wrangler secret put ELEVENLABS_LANGUAGE_CODE_ZH  # Default with zh voice: zh
@@ -108,7 +109,7 @@ npx wrangler secret put ELEVENLABS_STYLE          # Example: 0.85
 npx wrangler secret put ELEVENLABS_SPEED          # Example: 1.20
 ```
 
-`eleven_v3` supports audio tags such as `[whispers]`, `[sighs]`, and `[laughs]`.
+`eleven_v4`, `eleven_v4_turbo`, and `eleven_v3` support audio tags such as `[whispers]`, `[sighs]`, and `[laughs]`.
 `eleven_multilingual_v2` is a steadier choice for ordinary reading.
 
 ### 4. Deploy
@@ -136,7 +137,7 @@ npx wrangler deploy
 | `ELEVENLABS_VOICE_ID` | ElevenLabs | Default/fallback ElevenLabs voice ID |
 | `ELEVENLABS_VOICE_ID_ZH` | No | Chinese ElevenLabs voice ID; auto-selected when text contains Chinese |
 | `ELEVENLABS_VOICE_ID_EN` | No | English ElevenLabs voice ID; auto-selected for English text |
-| `ELEVENLABS_MODEL_ID` | No | ElevenLabs model (default: `eleven_v3`) |
+| `ELEVENLABS_MODEL_ID` | No | ElevenLabs model (default: `eleven_v4`; configured in `wrangler.jsonc`) |
 | `ELEVENLABS_OUTPUT_FORMAT` | No | ElevenLabs output format (default: `mp3_44100_128`) |
 | `ELEVENLABS_LANGUAGE_CODE` | No | ElevenLabs request language code, such as `zh` |
 | `ELEVENLABS_LANGUAGE_CODE_ZH` | No | Chinese request language code; defaults to `zh` when `ELEVENLABS_VOICE_ID_ZH` is set |
@@ -157,7 +158,7 @@ npx wrangler deploy
 | `GET /history?id=...` | Load an ElevenLabs history item into the visualizer |
 | `GET /speak?text=Hello` | Direct audio file |
 | `GET /speak?text=Hello&style=soft` | Direct audio file with optional style |
-| `GET /speak?text=[whispers]%20Hello` | Preserve detected ElevenLabs v3 audio tags |
+| `GET /speak?text=[whispers]%20Hello` | Preserve detected ElevenLabs v3/v4 audio tags |
 | `GET /speak?text=[whispers]%20Hello&raw_tags=false` | Strip audio tags explicitly |
 | `POST /speak` with `{ "text": "...", "style": "soft" }` | Direct audio file without URL-length limits |
 | `GET /status` | Health check |
@@ -176,10 +177,10 @@ visualizer loads it and enables playback.
 ElevenLabs uses the speech-with-timing API to store line-level caption cues for
 sync; providers without timing data fall back to approximate caption progress.
 
-When `TTS_PROVIDER=elevenlabs` and `ELEVENLABS_MODEL_ID=eleven_v3`, detected
+When `TTS_PROVIDER=elevenlabs` and `ELEVENLABS_MODEL_ID` selects `eleven_v4`, `eleven_v4_turbo`, or `eleven_v3`, detected
 audio tags such as `[whispers]` and `[sighs]` are preserved automatically.
 You can still pass `raw_tags=false` to strip them explicitly. Without raw tags,
-supported styles map to ElevenLabs v3 audio tags:
+supported styles map to ElevenLabs audio tags:
 
 | Style | Audio tag |
 |-------|-----------|
@@ -190,7 +191,12 @@ supported styles map to ElevenLabs v3 audio tags:
 | `laughing` | `[laughs]` |
 | `curious` | `[curious]` |
 
-DashScope/CosyVoice and non-v3 ElevenLabs calls strip raw audio tags before sending text to the provider.
+DashScope/CosyVoice and ElevenLabs models without audio-tag support strip raw audio tags before sending text to the provider.
+
+Eleven v4 uses Stability and Similarity settings. The Worker omits legacy Style,
+Speed, and Speaker Boost settings for v4, even if those secrets remain configured.
+The `style` input still maps to performance tags.
+See [ElevenLabs model settings](https://elevenlabs.io/docs/eleven-creative/playground/text-to-speech).
 
 ## Tech Stack
 

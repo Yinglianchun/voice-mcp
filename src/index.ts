@@ -2076,7 +2076,7 @@ function getVisualizerPanelHTML(botName: string): string {
 // TTS Provider Helpers
 // =============================================================================
 
-const ELEVENLABS_V3_STYLE_TAGS: Record<string, string> = {
+const ELEVENLABS_STYLE_TAGS: Record<string, string> = {
   soft: "[whispers]",
   teasing: "[mischievously]",
   excited: "[excited]",
@@ -2094,7 +2094,11 @@ function getDashScopeModel(env: Env): string {
 }
 
 function getElevenLabsModel(env: Env): string {
-  return env.ELEVENLABS_MODEL_ID || "eleven_v3";
+  return env.ELEVENLABS_MODEL_ID || "eleven_v4";
+}
+
+function supportsElevenLabsAudioTags(modelId: string): boolean {
+  return ["eleven_v3", "eleven_v4", "eleven_v4_turbo"].includes(modelId);
 }
 
 function getElevenLabsOutputFormat(env: Env): string {
@@ -2147,6 +2151,7 @@ function getElevenLabsVoiceSettings(env: Env): Record<string, number | boolean> 
 
   if (stability !== undefined) settings.stability = stability;
   if (similarityBoost !== undefined) settings.similarity_boost = similarityBoost;
+  if (["eleven_v4", "eleven_v4_turbo"].includes(getElevenLabsModel(env))) return settings;
   if (style !== undefined) settings.style = style;
   if (useSpeakerBoost !== undefined) settings.use_speaker_boost = useSpeakerBoost;
   if (speed !== undefined) settings.speed = speed;
@@ -2425,7 +2430,7 @@ function buildDashScopeText(input: SpeakInput): string {
 function buildElevenLabsText(env: Env, input: SpeakInput): string {
   const modelId = getElevenLabsModel(env);
 
-  if (modelId !== "eleven_v3") {
+  if (!supportsElevenLabsAudioTags(modelId)) {
     return stripAudioTags(input.text);
   }
 
@@ -2434,7 +2439,7 @@ function buildElevenLabsText(env: Env, input: SpeakInput): string {
   }
 
   const text = stripAudioTags(input.text);
-  const tag = input.style ? ELEVENLABS_V3_STYLE_TAGS[input.style.trim().toLowerCase()] : undefined;
+  const tag = input.style ? ELEVENLABS_STYLE_TAGS[input.style.trim().toLowerCase()] : undefined;
 
   return tag ? `${tag} ${text}` : text;
 }
@@ -2766,7 +2771,7 @@ function getTtsStatus(env: Env): Record<string, unknown> {
       configured: Boolean(env.ELEVENLABS_API_KEY && (env.ELEVENLABS_VOICE_ID || env.ELEVENLABS_VOICE_ID_ZH || env.ELEVENLABS_VOICE_ID_EN)),
       configured_zh: Boolean(env.ELEVENLABS_API_KEY && (env.ELEVENLABS_VOICE_ID_ZH || env.ELEVENLABS_VOICE_ID)),
       configured_en: Boolean(env.ELEVENLABS_API_KEY && (env.ELEVENLABS_VOICE_ID_EN || env.ELEVENLABS_VOICE_ID)),
-      audio_tags_enabled: modelId === "eleven_v3",
+      audio_tags_enabled: supportsElevenLabsAudioTags(modelId),
       language_mode: env.ELEVENLABS_VOICE_ID_ZH || env.ELEVENLABS_VOICE_ID_EN ? "auto" : "single",
       language_code: getElevenLabsLanguageCode(env) || "",
       language_codes: {
@@ -2892,7 +2897,7 @@ function createVoiceServer(env: Env, origin: string): McpServer {
       inputSchema: z.object({
         text: z.string().describe("Text to speak"),
         style: z.string().optional().describe("Optional speaking style"),
-        raw_tags: z.boolean().optional().describe("Allow raw ElevenLabs v3 audio tags when supported"),
+        raw_tags: z.boolean().optional().describe("Allow raw ElevenLabs v3/v4 audio tags when supported"),
       }),
       _meta: {
         ui: { resourceUri: VOICE_RESOURCE_URI },
