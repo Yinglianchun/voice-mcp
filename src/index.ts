@@ -2818,6 +2818,41 @@ function getLatestVoiceCacheRequest(origin: string): Request {
   return new Request(new URL(LATEST_VOICE_CACHE_PATH, origin).toString(), { method: "GET" });
 }
 
+async function getVoiceAudioCacheRequest(origin: string, env: Env, input: SpeakInput): Promise<Request> {
+  const provider = getTtsProvider(env);
+  const voiceSelection = provider === "elevenlabs" ? resolveElevenLabsVoice(env, input) : undefined;
+  const fingerprint = JSON.stringify({
+    version: 1,
+    provider,
+    model: provider === "elevenlabs" ? getElevenLabsModel(env) : getDashScopeModel(env),
+    voice: provider === "elevenlabs" ? voiceSelection?.voiceId : env.VOICE_ID,
+    language_code: voiceSelection?.languageCode,
+    output_format: provider === "elevenlabs" ? getElevenLabsOutputFormat(env) : "mp3_24000",
+    voice_settings: provider === "elevenlabs" ? getElevenLabsVoiceSettings(env) : undefined,
+    input,
+  });
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(fingerprint));
+  const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return new Request(new URL(`/__voice-mcp/audio/${key}`, origin).toString(), { method: "GET" });
+}
+
+function audioResponse(audioBase64: string, cacheControl?: string): Response {
+  const binaryString = atob(audioBase64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+
+  return new Response(bytes, {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "audio/mpeg",
+      "Content-Disposition": 'inline; filename="voice.mp3"',
+      ...(cacheControl ? { "Cache-Control": cacheControl } : {}),
+    },
+  });
+}
+
 function createVoiceEvent(env: Env, input: SpeakInput, result: AudioResult): VoiceEvent {
   const provider = getTtsProvider(env);
   const finalText = result.final_text || input.text;
@@ -3054,7 +3089,15 @@ export default {
     }
 
     // Direct audio API. POST avoids URL-length limits for long voice scripts.
-    if (path === '/speak' && (request.method === 'GET' || request.method === 'POST')) {
+    // Haven Bridge rewrites voice bubbles to /speak-cached so replaying one does
+    // not synthesize and bill the same immutable message again.
+    if ((path === '/speak' || path === '/speak-cached') && (request.method === 'GET' || request.method === 'POST')) {
+      if (path === '/speak-cached' && request.method !== 'GET') {
+        return Response.json({ error: 'Cached voice playback only supports GET' }, {
+          status: 405,
+          headers: corsHeaders,
+        });
+      }
       let textValue = "";
       let style: string | undefined;
       let rawTags: boolean | undefined;
@@ -3096,6 +3139,21 @@ export default {
         style,
         raw_tags: rawTags,
       });
+      const cacheRequest = path === '/speak-cached'
+        ? await getVoiceAudioCacheRequest(url.origin, env, input)
+        : undefined;
+      if (cacheRequest) {
+        const cachedResponse = await caches.default.match(cacheRequest);
+        if (cachedResponse) {
+          const headers = new Headers(cachedResponse.headers);
+          headers.set("X-Voice-Cache", "HIT");
+          return new Response(cachedResponse.body, {
+            status: cachedResponse.status,
+            statusText: cachedResponse.statusText,
+            headers,
+          });
+        }
+      }
       const result = await generateAudio(env, input);
 
       if (result.success && result.audio_base64) {
@@ -3105,19 +3163,15 @@ export default {
           console.error("Failed to store latest voice event", error);
         }
 
-        const binaryString = atob(result.audio_base64);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
+        const response = audioResponse(
+          result.audio_base64,
+          cacheRequest ? "public, max-age=31536000, immutable" : undefined,
+        );
+        if (cacheRequest) {
+          ctx.waitUntil(caches.default.put(cacheRequest, response.clone()));
+          response.headers.set("X-Voice-Cache", "MISS");
         }
-
-        return new Response(bytes, {
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'audio/mpeg',
-            'Content-Disposition': 'inline; filename="voice.mp3"',
-          },
-        });
+        return response;
       }
 
       return Response.json({ error: result.error }, {

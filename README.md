@@ -157,6 +157,7 @@ npx wrangler deploy
 | `GET /events/latest` | Latest generated voice event for the visualizer |
 | `GET /history?id=...` | Load an ElevenLabs history item into the visualizer |
 | `GET /speak?text=Hello` | Direct audio file |
+| `GET /speak-cached?text=Hello` | Generate once, then replay the same voice from cache |
 | `GET /speak?text=Hello&style=soft` | Direct audio file with optional style |
 | `GET /speak?text=[whispers]%20Hello` | Preserve detected ElevenLabs v3/v4 audio tags |
 | `GET /speak?text=[whispers]%20Hello&raw_tags=false` | Strip audio tags explicitly |
