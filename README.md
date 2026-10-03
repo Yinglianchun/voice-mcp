@@ -172,6 +172,24 @@ speak(text: string, style?: string, raw_tags?: boolean)
 
 Existing `speak(text)` calls remain compatible.
 
+`GET /speak`, `POST /speak`, `GET /speak-cached`, and the MCP `speak` tool share
+a SHA-256 recipe cache. The recipe includes text, style, raw-tag handling,
+provider, voice, model, language, output format, and voice settings. Successful
+audio and alignment data are saved without an expiration in SQLite-backed
+Durable Objects; the edge cache is only an additional playback shortcut.
+Concurrent requests for a recipe share one synthesis. Failed synthesis is not
+cached, and a storage error does not fall back to another paid request.
+Changing the recipe generates a separate recording. Existing recordings are
+retained until explicitly removed; this does not recover previously generated
+audio that was never saved. Old `/speak` URLs continue to work unchanged.
+
+The `VOICE_AUDIO_CACHE` binding and SQLite migration are in `wrangler.jsonc`;
+deploy them with the Worker. `/status` reports `audio_cache: "persistent"`.
+Direct audio responses report `X-Voice-Cache: HIT`, `MISS`, or `COALESCED`.
+Run `node tests/audio-cache.mjs` for integration checks using a mocked TTS
+provider (no ElevenLabs credits), and `npx tsc --noEmit` for type checking.
+See [Cloudflare Durable Object storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/).
+
 When the MCP `speak` tool succeeds, the Worker stores the latest voice event for
 `/panel`. Keep `/panel` open while using `speak`; when a new voice arrives, the
 visualizer loads it and enables playback.

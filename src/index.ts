@@ -11,12 +11,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
+import { DurableObject } from "cloudflare:workers";
 
 // =============================================================================
 // Types
 // =============================================================================
 
 export interface Env {
+  VOICE_AUDIO_CACHE: DurableObjectNamespace;
   TTS_PROVIDER?: string;
   DASHSCOPE_API_KEY?: string;
   VOICE_ID?: string;
@@ -48,6 +50,7 @@ interface SpeakInput {
 }
 
 interface AudioResult {
+  cache_status?: "HIT" | "MISS" | "COALESCED";
   success: boolean;
   audio_base64?: string;
   alignment?: ElevenLabsAlignment;
@@ -2750,10 +2753,75 @@ async function fetchElevenLabsHistoryEvent(env: Env, historyItemId: string): Pro
   }
 }
 
-async function generateAudio(env: Env, input: SpeakInput): Promise<AudioResult> {
+async function generateUncachedAudio(env: Env, input: SpeakInput): Promise<AudioResult> {
   return getTtsProvider(env) === "elevenlabs"
     ? generateElevenLabsAudio(env, input)
     : generateDashScopeAudio(env, input);
+}
+
+// Each recipe has one globally addressed object. Keep the promise before any
+// await so simultaneous requests cannot start a second paid synthesis.
+export class VoiceAudioCache extends DurableObject<Env> {
+  private pending?: Promise<AudioResult>;
+
+  async fetch(request: Request): Promise<Response> {
+    const input = normalizeSpeakInput(await request.json<SpeakInput>());
+    const inputError = getSpeakInputError(input.text);
+    if (inputError) return Response.json({ success: false, error: inputError }, { status: 400 });
+    const coalesced = Boolean(this.pending);
+    if (!this.pending) {
+      this.pending = this.readOrGenerate(input);
+    }
+    const pending = this.pending;
+    try {
+      const result = await pending;
+      return Response.json({
+        ...result,
+        cache_status: coalesced && result.cache_status === "MISS" ? "COALESCED" : result.cache_status,
+      });
+    } finally {
+      if (this.pending === pending) this.pending = undefined;
+    }
+  }
+
+  private async readOrGenerate(input: SpeakInput): Promise<AudioResult> {
+    const count = await this.ctx.storage.get<number>("chunks");
+    if (count !== undefined) {
+      const pieces: string[] = [];
+      for (let i = 0; i < count; i++) {
+        const piece = await this.ctx.storage.get<string>(`chunk:${i}`);
+        if (piece === undefined) throw new Error("Voice cache is incomplete");
+        pieces.push(piece);
+      }
+      return { ...JSON.parse(pieces.join("")), cache_status: "HIT" };
+    }
+    const result = await generateUncachedAudio(this.env, input);
+    if (result.success && result.audio_base64) {
+      const serialized = JSON.stringify(result);
+      // Chunk long audio and alignments to stay below per-value storage limits.
+      const chunkSize = 64 * 1024;
+      await this.ctx.storage.transaction(async (txn) => {
+        const chunks = Math.ceil(serialized.length / chunkSize);
+        for (let i = 0; i < chunks; i++) {
+          await txn.put(`chunk:${i}`, serialized.slice(i * chunkSize, (i + 1) * chunkSize));
+        }
+        await txn.put("chunks", chunks);
+      });
+    }
+    return { ...result, cache_status: "MISS" };
+  }
+}
+
+async function generateAudio(env: Env, input: SpeakInput): Promise<AudioResult> {
+  // Never fall back to paid synthesis if persistent storage is unavailable.
+  const key = await getVoiceAudioCacheKey(env, input);
+  const stub = env.VOICE_AUDIO_CACHE.get(env.VOICE_AUDIO_CACHE.idFromName(key));
+  const response = await stub.fetch("https://voice-cache/synthesize", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`Voice cache unavailable (${response.status})`);
+  return response.json<AudioResult>();
 }
 
 function getTtsStatus(env: Env): Record<string, unknown> {
@@ -2818,7 +2886,7 @@ function getLatestVoiceCacheRequest(origin: string): Request {
   return new Request(new URL(LATEST_VOICE_CACHE_PATH, origin).toString(), { method: "GET" });
 }
 
-async function getVoiceAudioCacheRequest(origin: string, env: Env, input: SpeakInput): Promise<Request> {
+async function getVoiceAudioCacheKey(env: Env, input: SpeakInput): Promise<string> {
   const provider = getTtsProvider(env);
   const voiceSelection = provider === "elevenlabs" ? resolveElevenLabsVoice(env, input) : undefined;
   const fingerprint = JSON.stringify({
@@ -2829,10 +2897,15 @@ async function getVoiceAudioCacheRequest(origin: string, env: Env, input: SpeakI
     language_code: voiceSelection?.languageCode,
     output_format: provider === "elevenlabs" ? getElevenLabsOutputFormat(env) : "mp3_24000",
     voice_settings: provider === "elevenlabs" ? getElevenLabsVoiceSettings(env) : undefined,
-    input,
+    input: { text: input.text, style: input.style || undefined, raw_tags: input.raw_tags },
   });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(fingerprint));
   const key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return key;
+}
+
+async function getVoiceAudioCacheRequest(origin: string, env: Env, input: SpeakInput): Promise<Request> {
+  const key = await getVoiceAudioCacheKey(env, input);
   return new Request(new URL(`/__voice-mcp/audio/${key}`, origin).toString(), { method: "GET" });
 }
 
@@ -3085,12 +3158,12 @@ export default {
         service: 'voice-mcp',
         ...getTtsStatus(env),
         version: '1.0.0',
+        audio_cache: env.VOICE_AUDIO_CACHE ? 'persistent' : 'unavailable',
       }, { headers: corsHeaders });
     }
 
-    // Direct audio API. POST avoids URL-length limits for long voice scripts.
-    // Haven Bridge rewrites voice bubbles to /speak-cached so replaying one does
-    // not synthesize and bill the same immutable message again.
+    // Both old /speak links and Bridge's /speak-cached links reuse stored audio.
+    // POST avoids URL-length limits and shares the same recipe cache.
     if ((path === '/speak' || path === '/speak-cached') && (request.method === 'GET' || request.method === 'POST')) {
       if (path === '/speak-cached' && request.method !== 'GET') {
         return Response.json({ error: 'Cached voice playback only supports GET' }, {
@@ -3139,22 +3212,27 @@ export default {
         style,
         raw_tags: rawTags,
       });
-      const cacheRequest = path === '/speak-cached'
-        ? await getVoiceAudioCacheRequest(url.origin, env, input)
-        : undefined;
-      if (cacheRequest) {
-        const cachedResponse = await caches.default.match(cacheRequest);
-        if (cachedResponse) {
-          const headers = new Headers(cachedResponse.headers);
-          headers.set("X-Voice-Cache", "HIT");
-          return new Response(cachedResponse.body, {
-            status: cachedResponse.status,
-            statusText: cachedResponse.statusText,
-            headers,
-          });
-        }
+      const cacheRequest = await getVoiceAudioCacheRequest(url.origin, env, input);
+      const cachedResponse = await caches.default.match(cacheRequest);
+      if (cachedResponse) {
+        const headers = new Headers(cachedResponse.headers);
+        headers.set("X-Voice-Cache", "HIT");
+        return new Response(cachedResponse.body, {
+          status: cachedResponse.status,
+          statusText: cachedResponse.statusText,
+          headers,
+        });
       }
-      const result = await generateAudio(env, input);
+      let result: AudioResult;
+      try {
+        result = await generateAudio(env, input);
+      } catch (error) {
+        console.error("Persistent voice cache unavailable", error);
+        return Response.json({ error: 'Voice cache unavailable; synthesis was not retried' }, {
+          status: 503,
+          headers: corsHeaders,
+        });
+      }
 
       if (result.success && result.audio_base64) {
         try {
@@ -3165,12 +3243,10 @@ export default {
 
         const response = audioResponse(
           result.audio_base64,
-          cacheRequest ? "public, max-age=31536000, immutable" : undefined,
+          "public, max-age=31536000",
         );
-        if (cacheRequest) {
-          ctx.waitUntil(caches.default.put(cacheRequest, response.clone()));
-          response.headers.set("X-Voice-Cache", "MISS");
-        }
+        ctx.waitUntil(caches.default.put(cacheRequest, response.clone()));
+        response.headers.set("X-Voice-Cache", result.cache_status || "MISS");
         return response;
       }
 

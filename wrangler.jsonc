@@ -3,6 +3,10 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "VOICE_AUDIO_CACHE", "class_name": "VoiceAudioCache" }]
+  },
+  "migrations": [{ "tag": "voice-audio-cache-v1", "new_sqlite_classes": ["VoiceAudioCache"] }],
   "vars": {
     "ELEVENLABS_MODEL_ID": "eleven_v4"
   },
