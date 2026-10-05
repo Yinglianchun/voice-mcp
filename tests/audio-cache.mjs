@@ -8,21 +8,34 @@ import { Miniflare } from "miniflare";
 const storage = await mkdtemp(join(tmpdir(), "voice-cache-"));
 execFileSync(process.execPath, ["node_modules/wrangler/bin/wrangler.js", "deploy", "--dry-run", "--outdir", join(storage, "bundle")], { stdio: "pipe" });
 let calls = 0;
+let mixCalls = 0;
 let fail = false;
+let lastTtsText = "";
 let mf;
 const bindings = {
   TTS_PROVIDER: "elevenlabs", ELEVENLABS_API_KEY: "test-key",
   ELEVENLABS_VOICE_ID: "test-voice", ELEVENLABS_MODEL_ID: "eleven_v4",
+  VOICE_SFX_URL: "https://mixer.test/mix", VOICE_SFX_TOKEN: "test-mixer-token",
 };
 const audio = Buffer.alloc(160000, 7).toString("base64");
+const mixedAudio = Buffer.alloc(170000, 9);
 const options = {
   modules: true, scriptPath: join(storage, "bundle", "index.js"),
   compatibilityDate: "2025-04-01", compatibilityFlags: ["nodejs_compat"],
   durableObjects: { VOICE_AUDIO_CACHE: { className: "VoiceAudioCache", useSQLite: true } },
   durableObjectsPersist: storage, bindings,
   outboundService: async (request) => {
+    if (request.url === bindings.VOICE_SFX_URL) {
+      mixCalls++;
+      assert.equal(request.headers.get("Authorization"), "Bearer test-mixer-token");
+      const form = await request.formData();
+      assert.equal(form.get("tag"), "[low, close | sfx=low]");
+      assert.ok(form.get("voice") instanceof File);
+      return new Response(mixedAudio, { headers: { "Content-Type": "audio/mpeg" } });
+    }
     assert.match(request.url, /^https:\/\/api.elevenlabs.io\/v1\/text-to-speech\//);
     calls++;
+    lastTtsText = (await request.clone().json()).text;
     await new Promise(resolve => setTimeout(resolve, 30));
     return fail ? new Response("upstream failed", { status: 500 })
       : Response.json({ audio_base64: audio });
@@ -66,26 +79,38 @@ try {
   }
   assert.equal(calls, 4, "style and raw tag changes use distinct recipes");
 
+  const mixed = await get("[low, close | sfx=low] Stay still.");
+  assert.equal(mixed.status, 200);
+  assert.equal((await mixed.arrayBuffer()).byteLength, mixedAudio.byteLength);
+  assert.equal(lastTtsText, "[low, close] Stay still.", "post-processing syntax is not spoken");
+  assert.equal(mixCalls, 1);
+  const mixedAgain = await get("[low, close | sfx=low] Stay still.");
+  await mixedAgain.arrayBuffer();
+  assert.equal(mixedAgain.headers.get("X-Voice-Cache"), "HIT");
+  assert.equal(mixCalls, 1, "mixed result is cached");
+  assert.equal((await get("[low | sfx=unknown] Nope.")).status, 400);
+  assert.equal(calls, 5, "invalid sfx directives never synthesize");
+
   fail = true;
   assert.equal((await get("Retry failure.")).status, 500);
   fail = false;
   assert.equal((await get("Retry failure.")).status, 200);
-  assert.equal(calls, 6, "failed synthesis is not cached");
+  assert.equal(calls, 7, "failed synthesis is not cached");
   assert.equal((await get("")).status, 400);
-  assert.equal(calls, 6, "invalid input never synthesizes");
+  assert.equal(calls, 7, "invalid input never synthesizes");
 
   await mf.dispose();
   mf = new Miniflare({ ...options, bindings: { ...bindings, ELEVENLABS_VOICE_ID: "other-voice" } });
   assert.equal((await get("Cache me.")).headers.get("X-Voice-Cache"), "MISS");
-  assert.equal(calls, 7, "voice change invalidates cached audio");
+  assert.equal(calls, 8, "voice change invalidates cached audio");
   await mf.dispose();
   mf = new Miniflare({ ...options, bindings: { ...bindings, ELEVENLABS_MODEL_ID: "eleven_v4_turbo" } });
   assert.equal((await get("Cache me.")).headers.get("X-Voice-Cache"), "MISS");
-  assert.equal(calls, 8, "model change invalidates cached audio");
+  assert.equal(calls, 9, "model change invalidates cached audio");
   await mf.dispose();
   mf = new Miniflare({ ...options, durableObjects: {} });
   assert.equal((await get("Storage unavailable.")).status, 503);
-  assert.equal(calls, 8, "missing storage must not fall back to paid TTS");
+  assert.equal(calls, 9, "missing storage must not fall back to paid TTS");
   console.log("Audio cache integration checks passed (mocked TTS; no credits used).");
 } finally {
   await mf?.dispose();

@@ -8,7 +8,8 @@
   },
   "migrations": [{ "tag": "voice-audio-cache-v1", "new_sqlite_classes": ["VoiceAudioCache"] }],
   "vars": {
-    "ELEVENLABS_MODEL_ID": "eleven_v4"
+    "ELEVENLABS_MODEL_ID": "eleven_v4",
+    "VOICE_SFX_URL": "https://haven.rain4haven99.cyou/api/voice-sfx/mix"
   },
   "observability": {
     "enabled": true

@@ -190,6 +190,18 @@ Run `node tests/audio-cache.mjs` for integration checks using a mocked TTS
 provider (no ElevenLabs credits), and `npx tsc --noEmit` for type checking.
 See [Cloudflare Durable Object storage](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/).
 
+### VPS sound-effect post-processing
+
+For ElevenLabs requests, one performance tag may include a post-processing
+directive: `[low, close | sfx=low]`. The Worker sends only `[low, close]` to
+ElevenLabs, then posts the synthesized block to the private ffmpeg mixer before
+caching the final MP3. Supported directives are `wet`, `low`, `slap`, `none`,
+and pinned forms such as `wet/655814` or `slap/182030`. Continuous layers may be
+combined with `wet+slap`.
+
+Configure `VOICE_SFX_URL` as a Worker variable and `VOICE_SFX_TOKEN` as a Worker
+secret. Requests without an `sfx=` directive keep the existing path unchanged.
+
 When the MCP `speak` tool succeeds, the Worker stores the latest voice event for
 `/panel`. Keep `/panel` open while using `speak`; when a new voice arrives, the
 visualizer loads it and enables playback.

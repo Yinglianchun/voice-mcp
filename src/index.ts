@@ -37,6 +37,8 @@ export interface Env {
   ELEVENLABS_STYLE?: string;
   ELEVENLABS_USE_SPEAKER_BOOST?: string;
   ELEVENLABS_SPEED?: string;
+  VOICE_SFX_URL?: string;
+  VOICE_SFX_TOKEN?: string;
   BOT_NAME?: string;
 }
 
@@ -2170,6 +2172,38 @@ function stripAudioTags(text: string): string {
     .trim();
 }
 
+const VOICE_SFX_TAG_RE = /\[([^\]\r\n|]*?)\s*\|\s*sfx\s*=\s*([^\]\r\n]+)\]/gi;
+
+interface VoiceSfxDirective {
+  tag: string;
+  directive: string;
+}
+
+function getVoiceSfxDirectives(text: string): VoiceSfxDirective[] {
+  return Array.from(text.matchAll(VOICE_SFX_TAG_RE), (match) => ({
+    tag: match[0],
+    directive: match[2].trim().toLowerCase(),
+  }));
+}
+
+function stripVoiceSfxDirectives(text: string): string {
+  return text.replace(VOICE_SFX_TAG_RE, (_match, voiceTag: string) => {
+    const trimmed = voiceTag.trim();
+    return trimmed ? `[${trimmed}]` : "";
+  });
+}
+
+function isValidVoiceSfxDirective(value: string): boolean {
+  const allowed = new Set([
+    "wet", "wet/803600", "wet/655814",
+    "low", "low/655814",
+    "slap", "slap/481202", "slap/182030",
+  ]);
+  if (value === "none") return true;
+  const parts = value.split("+").map((part) => part.trim()).filter(Boolean);
+  return parts.length > 0 && parts.every((part) => allowed.has(part));
+}
+
 function hasAudioTags(text: string): boolean {
   return stripAudioTags(text) !== text.trim();
 }
@@ -2177,7 +2211,7 @@ function hasAudioTags(text: string): boolean {
 function normalizeSpeakInput(input: SpeakInput): SpeakInput {
   return {
     ...input,
-    raw_tags: input.raw_tags ?? hasAudioTags(input.text),
+    raw_tags: input.raw_tags ?? hasAudioTags(stripVoiceSfxDirectives(input.text)),
   };
 }
 
@@ -2432,16 +2466,17 @@ function buildDashScopeText(input: SpeakInput): string {
 
 function buildElevenLabsText(env: Env, input: SpeakInput): string {
   const modelId = getElevenLabsModel(env);
+  const inputText = stripVoiceSfxDirectives(input.text);
 
   if (!supportsElevenLabsAudioTags(modelId)) {
-    return stripAudioTags(input.text);
+    return stripAudioTags(inputText);
   }
 
   if (input.raw_tags === true) {
-    return input.text;
+    return inputText;
   }
 
-  const text = stripAudioTags(input.text);
+  const text = stripAudioTags(inputText);
   const tag = input.style ? ELEVENLABS_STYLE_TAGS[input.style.trim().toLowerCase()] : undefined;
 
   return tag ? `${tag} ${text}` : text;
@@ -2589,6 +2624,46 @@ async function generateElevenLabsAudio(env: Env, input: SpeakInput): Promise<Aud
     };
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+async function applyVoiceSfx(env: Env, input: SpeakInput, result: AudioResult): Promise<AudioResult> {
+  if (!result.success || !result.audio_base64) return result;
+  const directives = getVoiceSfxDirectives(input.text);
+  if (!directives.length || directives[0].directive === "none") return result;
+  if (getTtsProvider(env) !== "elevenlabs") {
+    return { success: false, error: "Voice SFX post-processing requires ElevenLabs" };
+  }
+  if (!env.VOICE_SFX_URL || !env.VOICE_SFX_TOKEN) {
+    return { success: false, error: "Voice SFX service is not configured" };
+  }
+
+  const form = new FormData();
+  form.append("voice", new Blob([base64ToBytes(result.audio_base64)], { type: "audio/mpeg" }), "voice.mp3");
+  form.append("tag", directives[0].tag);
+  const seedDigest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.text));
+  form.append("seed", Array.from(new Uint8Array(seedDigest), (byte) => byte.toString(16).padStart(2, "0")).join(""));
+
+  try {
+    const response = await fetch(env.VOICE_SFX_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${env.VOICE_SFX_TOKEN}` },
+      body: form,
+    });
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 500);
+      return { success: false, error: `Voice SFX service error ${response.status}: ${detail}` };
+    }
+    return { ...result, audio_base64: arrayBufferToBase64(await response.arrayBuffer()) };
+  } catch (error) {
+    return { success: false, error: `Voice SFX service unavailable: ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
@@ -2754,9 +2829,10 @@ async function fetchElevenLabsHistoryEvent(env: Env, historyItemId: string): Pro
 }
 
 async function generateUncachedAudio(env: Env, input: SpeakInput): Promise<AudioResult> {
-  return getTtsProvider(env) === "elevenlabs"
+  const result = await (getTtsProvider(env) === "elevenlabs"
     ? generateElevenLabsAudio(env, input)
-    : generateDashScopeAudio(env, input);
+    : generateDashScopeAudio(env, input));
+  return applyVoiceSfx(env, input, result);
 }
 
 // Each recipe has one globally addressed object. Keep the promise before any
@@ -2874,7 +2950,13 @@ function getSpeakInputError(text: string): string | undefined {
     return "Text placeholder was not replaced";
   }
 
-  const visibleText = stripAudioTags(trimmed);
+  const sfxDirectives = getVoiceSfxDirectives(trimmed);
+  if (sfxDirectives.length > 1) return "Only one sfx= directive is supported per voice request";
+  if (sfxDirectives[0] && !isValidVoiceSfxDirective(sfxDirectives[0].directive)) {
+    return `Unsupported sfx directive: ${sfxDirectives[0].directive}`;
+  }
+
+  const visibleText = stripAudioTags(stripVoiceSfxDirectives(trimmed));
   if (!/[A-Za-z0-9\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]/.test(visibleText)) {
     return "No speakable text";
   }
@@ -2890,7 +2972,7 @@ async function getVoiceAudioCacheKey(env: Env, input: SpeakInput): Promise<strin
   const provider = getTtsProvider(env);
   const voiceSelection = provider === "elevenlabs" ? resolveElevenLabsVoice(env, input) : undefined;
   const fingerprint = JSON.stringify({
-    version: 1,
+    version: 2,
     provider,
     model: provider === "elevenlabs" ? getElevenLabsModel(env) : getDashScopeModel(env),
     voice: provider === "elevenlabs" ? voiceSelection?.voiceId : env.VOICE_ID,
@@ -2934,7 +3016,7 @@ function createVoiceEvent(env: Env, input: SpeakInput, result: AudioResult): Voi
 
   return {
     id: crypto.randomUUID(),
-    text: input.text,
+    text: stripVoiceSfxDirectives(input.text),
     audio_base64: result.audio_base64 || "",
     created_at: new Date().toISOString(),
     provider,
