@@ -29,7 +29,7 @@ const options = {
       mixCalls++;
       assert.equal(request.headers.get("Authorization"), "Bearer test-mixer-token");
       const form = await request.formData();
-      assert.equal(form.get("tag"), "[low, close | sfx=low]");
+      assert.equal(form.get("tag"), "[low, close | sfx=body_wet]");
       assert.ok(form.get("voice") instanceof File);
       return new Response(mixedAudio, { headers: { "Content-Type": "audio/mpeg" } });
     }
@@ -79,12 +79,12 @@ try {
   }
   assert.equal(calls, 4, "style and raw tag changes use distinct recipes");
 
-  const mixed = await get("[low, close | sfx=low] Stay still.");
+  const mixed = await get("[low, close | sfx=body_wet] Stay still.");
   assert.equal(mixed.status, 200);
   assert.equal((await mixed.arrayBuffer()).byteLength, mixedAudio.byteLength);
   assert.equal(lastTtsText, "[low, close] Stay still.", "post-processing syntax is not spoken");
   assert.equal(mixCalls, 1);
-  const mixedAgain = await get("[low, close | sfx=low] Stay still.");
+  const mixedAgain = await get("[low, close | sfx=body_wet] Stay still.");
   await mixedAgain.arrayBuffer();
   assert.equal(mixedAgain.headers.get("X-Voice-Cache"), "HIT");
   assert.equal(mixCalls, 1, "mixed result is cached");

@@ -2195,6 +2195,8 @@ function stripVoiceSfxDirectives(text: string): string {
 
 function isValidVoiceSfxDirective(value: string): boolean {
   const allowed = new Set([
+    "mouth_wet", "mouth_wet/655814",
+    "body_wet", "body_wet/803600",
     "wet", "wet/803600", "wet/655814",
     "low", "low/655814",
     "slap", "slap/481202", "slap/182030",

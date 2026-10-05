@@ -195,9 +195,12 @@ See [Cloudflare Durable Object storage](https://developers.cloudflare.com/durabl
 For ElevenLabs requests, one performance tag may include a post-processing
 directive: `[low, close | sfx=low]`. The Worker sends only `[low, close]` to
 ElevenLabs, then posts the synthesized block to the private ffmpeg mixer before
-caching the final MP3. Supported directives are `wet`, `low`, `slap`, `none`,
+caching the final MP3. Prefer source-aware directives: `mouth_wet` uses the
+oral wet bed and belongs with breaths/nonverbal sounds, while `body_wet` uses
+the non-mouth wet bed and may continue under dialogue. Legacy `wet`, `low`,
+plus `slap` and `none` remain supported,
 and pinned forms such as `wet/655814` or `slap/182030`. Continuous layers may be
-combined with `wet+slap`.
+combined with `body_wet+slap`.
 
 Configure `VOICE_SFX_URL` as a Worker variable and `VOICE_SFX_TOKEN` as a Worker
 secret. Requests without an `sfx=` directive keep the existing path unchanged.
